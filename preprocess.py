@@ -1,124 +1,59 @@
-import re
 import pickle
-from glob import glob
-from tqdm import tqdm
+from traces import TimeSeries
+
+with open("data/raw.pickle", "rb") as file:
+    data = pickle.load(file)
 
 
-def parse_txt(filename):
-    """Parse a txt file into a list of records."""
-    with open(filename) as file:
-        data = file.read()
-    # split records by emtpy lines
-    records = data.split("\n\n")
-    # discard the first 5 records -- they're startup diagnostics
-    return records[5:]
+def sample_not_too_short(sample):
+    return len(sample["rsrp"]) >= 100 and len(sample["bandwidth"]) >= 100
 
 
-def extract_timestamp(record):
-    """Extract timestamp from a record and return it as an integer in milliseconds."""
-    match = re.search(r"(\d\d):(\d\d):(\d\d)\.(\d\d\d)", record)
-    hour = int(match.group(1))
-    minute = int(match.group(2))
-    second = int(match.group(3))
-    millisecond = int(match.group(4))
-    return ((((hour * 60) + minute) * 60) + second) * 1000 + millisecond
+def discard_non_positive_values(timeseries):
+    bad_ts = []
+    for ts, value in timeseries:
+        if value <= 0:
+            bad_ts.append(ts)
+    for ts in bad_ts:
+        timeseries.remove(ts)
 
 
-def extract_rx_deliv(record):
-    """Extract accumulated total bytes delivered from a PDCP DL Data record."""
-    # This pattern matches the third integer in a table, where integers are separated
-    # by whitespaces and vertical bars.
-    values = re.findall(r"\|\s*\d\|\s*\d+\|\s*(\d+)\|\s*\d+\|\s*\d+\|", record)
-    return max(int(x) for x in values)
+def resample(sample, inteval=50):
+    """Resample bandwidth and rsrp at regular intevals.
 
+    This converts irregular timeseries into regular ones.
 
-def extract_5G_rsrp(record):
-    """Extract serving RSRP (reference signal received power) from a Measurement Database Update record.
-
-    The larger of the two RSRP is used as the signal strength. The value is often negative, measured in dBm."""
-    values = re.findall(r"Serving RSRP Rx23\s+= ([-+.\d]+)", record)
-    return max(float(x) for x in values)
-
-
-def extract_4G_rsrp(record):
-    """Extract serving RSRP (reference signal received power) from a Cell Meas Response record.
-
-    The largest RSRP is used as the signal strength. The value is often negative, measured in dBm."""
-    values = re.findall(r"Inst RSRP Rx\[.]\s+= ([-+.\d]+)", record)
-    return max(float(x) for x in values)
-
-
-def process_logfile(filepath, logtype):
-    """Extract data from a log file.
-
-    `logtype` is one of "LTE", "SA", and "NSA".
-
-    Returns a dict with the following keys:
-        rsrp, rsrp_ts: two lists that represents the time series of signal power.
-        bandwidth, bandwidth_ts: two lists that represents the time series of bandwidth.
+    Returns:
+        bw: a list of bandwidth datapoints.
+        rsrp: a list of rsrp datapoints.
     """
-    assert logtype in ("LTE", "SA", "NSA")
-    records = parse_txt(filepath)
-    rsrp = []
-    rsrp_ts = []
-    bandwidth = []
-    bandwidth_ts = []
-    # Data from RX Deliv is accumulative; we will take the first order difference of it.
-    last_rx_deliv = None
-    for record in records:
-        try:
-            if logtype == "LTE" and "Cell Meas Response" in record:
-                rsrp.append(extract_4G_rsrp(record))
-                rsrp_ts.append(extract_timestamp(record))
-            elif logtype in ("SA", "NSA") and "Measurement Database Update" in record:
-                rsrp.append(extract_5G_rsrp(record))
-                rsrp_ts.append(extract_timestamp(record))
-        except Exception as e:
-            print(f"Warning: ignoring rsrp record {len(rsrp) + 1} because {e}")
+    bw = TimeSeries(zip(sample["bandwidth_ts"], sample["bandwidth"]))
+    rsrp = TimeSeries(zip(sample["rsrp_ts"], sample["rsrp"]))
 
-        try:
-            if "PDCP DL Data" in record:
-                rx_deliv = extract_rx_deliv(record)
-                if last_rx_deliv is None:
-                    bandwidth.append(0)
-                    last_rx_deliv = rx_deliv
-                else:
-                    bandwidth.append(rx_deliv - last_rx_deliv)
-                    last_rx_deliv = rx_deliv
-                bandwidth_ts.append(extract_timestamp(record))
-        except Exception as e:
-            print(f"Warning: ignoring bandwidth record {len(rsrp) + 1} because {e}")
-    return {
-        "rsrp": rsrp,
-        "rsrp_ts": rsrp_ts,
-        "bandwidth": bandwidth,
-        "bandwidth_ts": bandwidth_ts,
-    }
+    discard_non_positive_values(bw)
+
+    # resample using only data in overlapping time
+    ts_start = max(sample["bandwidth_ts"][0], sample["rsrp_ts"][0])
+    ts_end = min(sample["bandwidth_ts"][-1], sample["rsrp_ts"][-1])
+    bw1 = bw.sample(inteval, ts_start, ts_end)
+    rsrp1 = rsrp.sample(inteval, ts_start, ts_end)
+    assert len(bw1) == len(rsrp1)
+
+    # discard timestamps
+    bw2 = [x for ts, x in bw1]
+    rsrp2 = [x for ts, x in rsrp1]
+    return bw2, rsrp2
 
 
-def process_all_data():
-    """Collect all data on the disk and process them."""
-    glob_patterns = lambda filetype: [
-        f"/mnt/20210530/{filetype}/client*/2021-*.txt",
-        f"/mnt/20210715/{filetype}/client*/2021-*.txt",
-        f"/mnt/20210805/{filetype}/client/*/2021-*.txt",
-        f"/mnt/20210911/{filetype}/client/*/2021-*.txt",
-    ]
-    result = {
-        "LTE": [],
-        "SA": [],
-        "NSA": [],
-    }
-    for filetype in ("SA", "LTE", "NSA"):
-        pathnames = []
-        for pat in glob_patterns(filetype):
-            pathnames += glob(pat)
-        for pathname in tqdm(pathnames):
-            result[filetype].append(process_logfile(pathname, filetype))
-    return result
+clean_data = {
+    "LTE": [],
+    "SA": [],
+    "NSA": [],
+}
+for filetype in ("LTE", "SA", "NSA"):
+    samples = filter(sample_not_too_short, data[filetype])
+    for sample in samples:
+        clean_data[filetype].append(resample(sample))
 
-
-data = process_all_data()
-
-with open("data.pickle", "wb") as file:
-    pickle.dump(data, file=file)
+with open("data/processed.pickle", "wb") as file:
+    pickle.dump(clean_data, file=file)
