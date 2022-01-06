@@ -1,5 +1,7 @@
 import pickle
+import numpy as np
 from traces import TimeSeries
+from tqdm import tqdm
 
 with open("data/raw.pickle", "rb") as file:
     data = pickle.load(file)
@@ -40,8 +42,8 @@ def resample(sample, inteval=50):
     assert len(bw1) == len(rsrp1)
 
     # discard timestamps
-    bw2 = [x for ts, x in bw1]
-    rsrp2 = [x for ts, x in rsrp1]
+    bw2 = np.array([x for ts, x in bw1])
+    rsrp2 = np.array([x for ts, x in rsrp1])
     return bw2, rsrp2
 
 
@@ -52,7 +54,7 @@ clean_data = {
 }
 for filetype in ("LTE", "SA", "NSA"):
     samples = filter(sample_not_too_short, data[filetype])
-    for sample in samples:
+    for sample in tqdm(samples):
         clean_data[filetype].append(resample(sample))
 
 with open("data/processed.pickle", "wb") as file:
