@@ -35,15 +35,15 @@ def resample(sample, inteval=50):
     discard_non_positive_values(bw)
 
     # resample using only data in overlapping time
-    ts_start = max(sample["bandwidth_ts"][0], sample["rsrp_ts"][0])
-    ts_end = min(sample["bandwidth_ts"][-1], sample["rsrp_ts"][-1])
+    ts_start = max(bw.first_key(), rsrp.first_key())
+    ts_end = min(bw.last_key(), rsrp.last_key())
     bw1 = bw.sample(inteval, ts_start, ts_end)
     rsrp1 = rsrp.sample(inteval, ts_start, ts_end)
     assert len(bw1) == len(rsrp1)
 
     # discard timestamps
-    bw2 = np.array([x for ts, x in bw1])
-    rsrp2 = np.array([x for ts, x in rsrp1])
+    bw2 = np.array([x for ts, x in bw1], dtype=np.int32)
+    rsrp2 = np.array([x for ts, x in rsrp1], dtype=np.float32)
     return bw2, rsrp2
 
 
